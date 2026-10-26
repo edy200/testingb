@@ -163,6 +163,23 @@ pre{margin:0;background:var(--surface-2);border:1px solid var(--line);border-rad
           <div class="field"><label for="sh">Heading °</label><input type="number" id="sh" step="5"></div>
         </div>
       </div>
+      <div class="sec">
+        <h2>Espejo para la otra alianza</h2>
+        <div class="field"><label for="mirMode">Tipo</label>
+          <select id="mirMode">
+            <option value="rot">Rotar 180° (como la cancha BIOBUZZ)</option>
+            <option value="x">Reflejar izquierda ↔ derecha</option>
+            <option value="y">Reflejar audiencia ↔ lado lejano</option>
+          </select>
+        </div>
+        <div class="grid2">
+          <div class="field"><label for="mirCx">Centro X</label><input type="number" id="mirCx" step="0.25"></div>
+          <div class="field"><label for="mirCy">Centro Y</label><input type="number" id="mirCy" step="0.25"></div>
+        </div>
+        <label class="chk"><input type="checkbox" id="mirPreview"> Ver vista previa</label>
+        <button class="btn sm primary" id="mirApply">Convertir rutas a la otra alianza</button>
+        <p class="note">Cambia todos los puntos, headings y la alianza. El centro por defecto sale de las coordenadas de los hives de tu HiveSubsystem, así el hive rojo cae justo en el azul. Se puede deshacer.</p>
+      </div>
     </aside>
 
     <section class="card center" aria-label="Cancha">
@@ -366,7 +383,8 @@ var S={
   vx:0, vy:0, w:0,
   useCad:true, pivotFwd:-3.172, pivotLeft:-1.922, hyst:6, maxDeg:170, lat:0.07, iter:3, activo:true,
   speed:30, playing:false, loop:false, t:0,
-  grid:false, ruler:false, ghost:true, addMode:false
+  grid:false, ruler:false, ghost:true, addMode:false,
+  mirMode:'rot', mirCx:70.87, mirCy:71.03, mirPreview:false
 };
 var out={};
 
@@ -445,6 +463,20 @@ function turretPeriodic(){
   out.raw=r.norm; out.turret=r.rad; out.clamped=r.clamped;
 }
 
+/* ===== Espejo ===== */
+function mirPt(q){ var cx=S.mirCx, cy=S.mirCy;
+  if (S.mirMode==='rot') return {x:r1(2*cx-q.x), y:r1(2*cy-q.y)};
+  if (S.mirMode==='x') return {x:r1(2*cx-q.x), y:q.y};
+  return {x:q.x, y:r1(2*cy-q.y)}; }
+function mirH(h){ var o = S.mirMode==='rot' ? h+180 : S.mirMode==='x' ? 180-h : -h;
+  o=((o%360)+540)%360-180; return Math.round(o*10)/10; }
+function mirrorDoc(d){
+  var n=JSON.parse(JSON.stringify(d));
+  var st=mirPt(n.start); n.start={x:st.x,y:st.y,h:mirH(n.start.h)};
+  n.paths.forEach(function(p){ p.end=mirPt(p.end); p.ctrl=p.ctrl.map(mirPt); p.fp=mirPt(p.fp); p.h0=mirH(p.h0); p.h1=mirH(p.h1); p.hc=mirH(p.hc); });
+  return n;
+}
+
 /* ===== Deshacer / rehacer ===== */
 var undoStack=[], redoStack=[];
 function snap(){ return JSON.stringify(S.doc); }
@@ -517,6 +549,16 @@ function drawPaths(){
     text(String(s.i+1),p.end.x,p.end.y,selected?'#2a1a00':C['--path'],3.4,'center',700);
   });
   var st=S.doc.start; circle(st.x,st.y,2.8,C['--start'],C['--surface'],1.5); text('S',st.x,st.y,'#fff',3.4,'center',700);
+  if (S.mirPreview) drawMirrorPreview();
+}
+function drawMirrorPreview(){
+  var m=mirrorDoc(S.doc), col=S.alliance==='RED'?C['--blue']:C['--red'], prevPt=m.start;
+  ctx.strokeStyle=col; ctx.lineWidth=2*dpr; ctx.setLineDash([5*dpr,4*dpr]); ctx.globalAlpha=.9;
+  m.paths.forEach(function(p){ var pts=[prevPt].concat(p.ctrl,[p.end]); ctx.beginPath(); for (var k=0;k<=40;k++){ var q=bez(pts,k/40); if(k===0)ctx.moveTo(X(q.x),Y(q.y)); else ctx.lineTo(X(q.x),Y(q.y)); } ctx.stroke(); prevPt=p.end; });
+  ctx.setLineDash([]); ctx.globalAlpha=1;
+  m.paths.forEach(function(p,i){ circle(p.end.x,p.end.y,2.4,C['--surface'],col,1.5); text(String(i+1),p.end.x,p.end.y,col,3.2,'center',700); });
+  circle(m.start.x,m.start.y,2.4,col); text('S',m.start.x,m.start.y,'#fff',3.2,'center',700);
+  var hr=m.start.h*DEG; ctx.strokeStyle=col; ctx.lineWidth=1.5*dpr; ctx.beginPath(); ctx.moveTo(X(m.start.x),Y(m.start.y)); ctx.lineTo(X(m.start.x+8*Math.cos(hr)),Y(m.start.y+8*Math.sin(hr))); ctx.stroke();
 }
 function drawRobotAndTurret(){
   var hs=mine();
@@ -709,6 +751,16 @@ $('addMode').addEventListener('click',function(){ S.addMode=!S.addMode; if (S.ad
 $('tRuler').addEventListener('click',function(){ S.ruler=!S.ruler; if (S.ruler){ S.addMode=false; $('addMode').setAttribute('aria-pressed',false); } else rulerLine=null; this.setAttribute('aria-pressed',S.ruler); setMsg(); });
 $('tGrid').addEventListener('click',function(){ S.grid=!S.grid; this.setAttribute('aria-pressed',S.grid); save(); });
 $('tGhost').addEventListener('click',function(){ S.ghost=!S.ghost; this.setAttribute('aria-pressed',S.ghost); save(); });
+$('mirMode').addEventListener('change',function(){ S.mirMode=this.value; save(); });
+$('mirCx').addEventListener('input',function(){ var v=parseFloat(this.value); if (!isNaN(v)){ S.mirCx=v; save(); } });
+$('mirCy').addEventListener('input',function(){ var v=parseFloat(this.value); if (!isNaN(v)){ S.mirCy=v; save(); } });
+$('mirPreview').addEventListener('change',function(){ S.mirPreview=this.checked; save(); });
+$('mirApply').addEventListener('click',function(){
+  if (!S.doc.paths.length){ flash('No hay rutas para convertir'); return; }
+  pushUndo(); S.doc=mirrorDoc(S.doc);
+  setAlliance(S.alliance==='RED'?'BLUE':'RED'); setAllyUI();
+  setT(0); afterDocChange(); flash('Rutas convertidas para la alianza '+(S.alliance==='RED'?'roja':'azul'));
+});
 $('undo').addEventListener('click',undo); $('redo').addEventListener('click',redo);
 $('play').addEventListener('click',togglePlay);
 $('loop').addEventListener('click',function(){ S.loop=!S.loop; this.setAttribute('aria-pressed',S.loop); });
@@ -732,7 +784,7 @@ function endHeading(i){ if (!cache) build(); return Math.round(normalizeRadians(
 function linStartDeg(i){ if (!cache) build(); return Math.round(normalizeRadians(cache.segs[i].linStart)/DEG); }
 function renderCode(){
   var L=[], vars=uniqueVars(), st=S.doc.start;
-  L.push('// Generado con Simulador BIOBUZZ ('+S.fileName+'). Pulgadas; headings en grados.');
+  L.push('// Generado con Simulador BIOBUZZ ('+S.fileName+', alianza '+(S.alliance==='RED'?'roja':'azul')+'). Pulgadas; headings en grados.');
   L.push('private final PoseFactory p = PoseFactory.degrees();');
   L.push('private final Pose startPose = p.of('+fmt(st.x)+', '+fmt(st.y)+', '+Math.round(st.h)+');');
   S.doc.paths.forEach(function(q,i){ L.push('private final Pose '+vars[i]+'End = p.of('+fmt(q.end.x)+', '+fmt(q.end.y)+', '+endHeading(i)+');'); });
@@ -778,9 +830,9 @@ $('fileIn').addEventListener('change',function(){ var f=this.files&&this.files[0
 
 /* ===== Guardar en este navegador ===== */
 var KEY='sim-biobuzz-v4';
-function save(){ try{ localStorage.setItem(KEY,JSON.stringify({doc:S.doc,sel:S.sel,fileName:S.fileName,pivotFwd:S.pivotFwd,pivotLeft:S.pivotLeft,hyst:S.hyst,maxDeg:S.maxDeg,lat:S.lat,iter:S.iter,activo:S.activo,alliance:S.alliance,useCad:S.useCad,speed:S.speed,grid:S.grid,ghost:S.ghost})); }catch(e){} }
+function save(){ try{ localStorage.setItem(KEY,JSON.stringify({doc:S.doc,sel:S.sel,fileName:S.fileName,pivotFwd:S.pivotFwd,pivotLeft:S.pivotLeft,hyst:S.hyst,maxDeg:S.maxDeg,lat:S.lat,iter:S.iter,activo:S.activo,alliance:S.alliance,useCad:S.useCad,speed:S.speed,grid:S.grid,ghost:S.ghost,mirMode:S.mirMode,mirCx:S.mirCx,mirCy:S.mirCy,mirPreview:S.mirPreview})); }catch(e){} }
 function load(){ try{ var d=JSON.parse(localStorage.getItem(KEY)||'null'); if (!d) return;
-  ['doc','sel','fileName','pivotFwd','pivotLeft','hyst','maxDeg','lat','iter','activo','useCad','speed','grid','ghost'].forEach(function(k){ if (d[k]!==undefined) S[k]=d[k]; });
+  ['doc','sel','fileName','pivotFwd','pivotLeft','hyst','maxDeg','lat','iter','activo','useCad','speed','grid','ghost','mirMode','mirCx','mirCy','mirPreview'].forEach(function(k){ if (d[k]!==undefined) S[k]=d[k]; });
   if (d.alliance) setAlliance(d.alliance);
 }catch(e){} }
 
@@ -829,6 +881,7 @@ function frame(t){
 load();
 ['pFwd','pLeft','hyst','maxDeg','lat','iter','spd'].forEach(function(id){ var m={pFwd:'pivotFwd',pLeft:'pivotLeft',hyst:'hyst',maxDeg:'maxDeg',lat:'lat',iter:'iter',spd:'speed'}; $(id).value=S[m[id]]; });
 $('tmActivo').checked=S.activo; $('useCad').checked=S.useCad; $('fileName').value=S.fileName;
+$('mirMode').value=S.mirMode; $('mirCx').value=S.mirCx; $('mirCy').value=S.mirCy; $('mirPreview').checked=S.mirPreview;
 $('tGrid').setAttribute('aria-pressed',S.grid); $('tGhost').setAttribute('aria-pressed',S.ghost);
 if (S.sel>=S.doc.paths.length) S.sel=S.doc.paths.length-1; if (S.sel<0) S.sel=0;
 if (!S.current) setAlliance(S.alliance);
