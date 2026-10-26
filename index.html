@@ -211,7 +211,7 @@ pre{margin:0;background:var(--surface-2);border:1px solid var(--line);border-rad
           </select>
         </div>
         <div class="grid2" id="hLinear">
-          <div class="field"><label for="h0">Inicio °</label><input type="number" id="h0" step="5"></div>
+          <div class="field"><label for="h0">Inicio ° (heredado)</label><input type="number" id="h0" disabled title="Arranca del heading inicial o del final de la ruta anterior"></div>
           <div class="field"><label for="h1">Final °</label><input type="number" id="h1" step="5"></div>
         </div>
         <div class="field" id="hConst"><label for="hc">Heading °</label><input type="number" id="hc" step="5"></div>
@@ -381,17 +381,29 @@ function build(){
     var pts=pathPts(i), smp=[], L=[0], prev=null;
     for (var k=0;k<=N;k++){ var q=bez(pts,k/N); smp.push(q); if (prev) L.push(L[L.length-1]+Math.hypot(q.x-prev.x,q.y-prev.y)); prev=q; }
     var len=L[L.length-1], dur=len/Math.max(1,S.speed), wait=Math.max(0,(p.wait||0)/1000);
-    segs.push({i:i,pts:pts,smp:smp,L:L,len:len,t0:T,dur:dur,wait:wait}); T+=dur+wait;
+    var seg={i:i,pts:pts,smp:smp,L:L,len:len,t0:T,dur:dur,wait:wait};
+    // Lineal arranca del heading objetivo con el que terminó la ruta anterior (o del heading inicial)
+    seg.linStart = i===0 ? S.doc.start.h*DEG : segs[i-1].tEnd;
+    segs.push(seg);
+    var tgt0=targetAt(seg,0,pts[0]);
+    seg.tEnd=targetAt(seg,1,bez(pts,1));
+    // Heading real al empezar: el inicial o el real al final de la ruta anterior; el error se corrige gradualmente
+    var hStart = i===0 ? S.doc.start.h*DEG : segs[i-1].hEnd;
+    seg.err=normalizeRadians(hStart-tgt0);
+    seg.hEnd=seg.tEnd+seg.err*Math.exp(-HEAD_K*(dur+wait));
+    T+=dur+wait;
   });
   cache={segs:segs,total:T};
 }
+var HEAD_K=5; // 1/s: qué tan rápido corrige el robot su heading (aprox. el PID de heading de Pedro)
+function actualHeading(seg,u,pos,tau){ return targetAt(seg,u,pos)+seg.err*Math.exp(-HEAD_K*Math.max(0,tau)); }
 function uAt(seg,s){ var L=seg.L, n=L.length-1; if (s<=0) return 0; if (s>=seg.len) return 1; var lo=0,hi=n; while (hi-lo>1){ var m=(lo+hi)>>1; if (L[m]<s) lo=m; else hi=m; } var f=(s-L[lo])/((L[hi]-L[lo])||1); return (lo+f)/n; }
-function headingAt(i,u,pos){
-  var p=S.doc.paths[i];
+function targetAt(seg,u,pos){
+  var i=seg.i, p=S.doc.paths[i];
   if (p.mode==='constant') return p.hc*DEG;
-  if (p.mode==='linear'){ var a=p.h0*DEG, b=p.h1*DEG; return a+normalizeRadians(b-a)*u; }
+  if (p.mode==='linear'){ var a=seg.linStart, b=p.h1*DEG; return a+normalizeRadians(b-a)*u; }
   if (p.mode==='facing') return Math.atan2(p.fp.y-pos.y, p.fp.x-pos.x);
-  var pts=pathPts(i), e=1e-3, a1=bez(pts,Math.max(0,u-e)), b1=bez(pts,Math.min(1,u+e));
+  var pts=seg.pts, e=1e-3, a1=bez(pts,Math.max(0,u-e)), b1=bez(pts,Math.min(1,u+e));
   var t=Math.atan2(b1.y-a1.y,b1.x-a1.x);
   return p.mode==='reverse' ? t+Math.PI : t;
 }
@@ -405,7 +417,7 @@ function poseAtTime(t){
       var u = s.dur>0 ? uAt(s,Math.min(1,Math.max(0,(t-s.t0)/s.dur))*s.len) : 1;
       if (t>s.t0+s.dur) u=1;
       var q=bez(s.pts,u);
-      return {x:q.x,y:q.y,h:headingAt(s.i,u,q)};
+      return {x:q.x,y:q.y,h:actualHeading(s,u,q,t-s.t0)};
     }
   }
 }
@@ -497,7 +509,7 @@ function drawPaths(){
     if (selected && s.pts.length>2){ ctx.setLineDash([3*dpr,4*dpr]); ctx.strokeStyle=C['--honey']; ctx.lineWidth=dpr; ctx.globalAlpha=.8; ctx.beginPath(); s.pts.forEach(function(p,k){ if(k===0)ctx.moveTo(X(p.x),Y(p.y)); else ctx.lineTo(X(p.x),Y(p.y)); }); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha=1; }
     ctx.strokeStyle=col; ctx.lineWidth=(selected?3:2)*dpr; ctx.globalAlpha=selected?1:.75; ctx.beginPath();
     s.smp.forEach(function(p,k){ if(k===0)ctx.moveTo(X(p.x),Y(p.y)); else ctx.lineTo(X(p.x),Y(p.y)); }); ctx.stroke(); ctx.globalAlpha=1;
-    if (S.ghost && selected){ for (var d=0; d<=s.len+0.01; d+=Math.max(10,s.len/6)){ var u=uAt(s,d), q=bez(s.pts,u); drawRobotAt(q.x,q.y,headingAt(s.i,u,q),.18); } }
+    if (S.ghost && selected){ for (var d=0; d<=s.len+0.01; d+=Math.max(10,s.len/6)){ var u=uAt(s,d), q=bez(s.pts,u); drawRobotAt(q.x,q.y,actualHeading(s,u,q,s.len>0?d/s.len*s.dur:0),.18); } }
     var p=S.doc.paths[s.i];
     if (selected && p.mode==='facing'){ ctx.strokeStyle=C['--honey']; ctx.lineWidth=1.5*dpr; var fx=X(p.fp.x), fy=Y(p.fp.y), r=2.4*scale; ctx.beginPath(); ctx.moveTo(fx-r,fy-r); ctx.lineTo(fx+r,fy+r); ctx.moveTo(fx+r,fy-r); ctx.lineTo(fx-r,fy+r); ctx.stroke(); }
     if (selected) p.ctrl.forEach(function(c){ ctx.fillStyle=C['--honey-soft']; ctx.strokeStyle=C['--honey']; ctx.lineWidth=1.5*dpr; var cx=X(c.x), cy=Y(c.y), r=1.8*scale; ctx.beginPath(); ctx.rect(cx-r,cy-r,2*r,2*r); ctx.fill(); ctx.stroke(); });
@@ -646,7 +658,7 @@ function renderInputs(){
   $('addCtrl').disabled=!has; $('delCtrl').disabled=!has||!p.ctrl.length; $('toEnd').disabled=!S.doc.paths.length;
   if (!has) return;
   setVal('pName',p.name); setVal('pex',p.end.x); setVal('pey',p.end.y);
-  $('hMode').value=p.mode; setVal('h0',p.h0); setVal('h1',p.h1); setVal('hc',p.hc); setVal('fx',p.fp.x); setVal('fy',p.fp.y); setVal('pWait',p.wait);
+  if (!cache) build(); $('hMode').value=p.mode; $('h0').value=linStartDeg(S.sel); setVal('h1',p.h1); setVal('hc',p.hc); setVal('fx',p.fp.x); setVal('fy',p.fp.y); setVal('pWait',p.wait);
   $('hLinear').hidden=p.mode!=='linear'; $('hConst').hidden=p.mode!=='constant'; $('hFacing').hidden=p.mode!=='facing';
   var cl=$('ctrlList');
   if (cl.childElementCount!==p.ctrl.length){
@@ -674,7 +686,7 @@ bindDoc('sx',function(v){ S.doc.start.x=clampF(v); },num); bindDoc('sy',function
 function P(){ return S.doc.paths[S.sel]; }
 bindDoc('pName',function(v){ P().name=v||('Ruta '+(S.sel+1)); });
 bindDoc('pex',function(v){ P().end.x=clampF(v); },num); bindDoc('pey',function(v){ P().end.y=clampF(v); },num);
-bindDoc('hMode',function(v){ P().mode=v; }); bindDoc('h0',function(v){ P().h0=v; },num); bindDoc('h1',function(v){ P().h1=v; },num); bindDoc('hc',function(v){ P().hc=v; },num);
+bindDoc('hMode',function(v){ P().mode=v; }); bindDoc('h1',function(v){ P().h1=v; },num); bindDoc('hc',function(v){ P().hc=v; },num);
 bindDoc('fx',function(v){ P().fp.x=clampF(v); },num); bindDoc('fy',function(v){ P().fp.y=clampF(v); },num);
 bindDoc('pWait',function(v){ P().wait=Math.max(0,v); },num);
 $('fileName').addEventListener('input',function(){ S.fileName=this.value; renderJson(); save(); });
@@ -716,7 +728,8 @@ $('allyBlue').addEventListener('click',function(){ setAlliance('BLUE'); setAllyU
 function jn(s){ return s.replace(/[^A-Za-z0-9_]/g,'_').replace(/^([0-9])/,'_$1'); }
 function pathVar(i){ var b=jn(S.doc.paths[i].name.trim().replace(/\s+(.)/g,function(m,c){return c.toUpperCase();})); b=b.charAt(0).toLowerCase()+b.slice(1); return b||('path'+(i+1)); }
 function uniqueVars(){ var seen={}, out=[]; S.doc.paths.forEach(function(p,i){ var v=pathVar(i); if (seen[v]) v=v+(i+1); seen[v]=1; out.push(v); }); return out; }
-function endHeading(i){ var p=S.doc.paths[i]; if (!cache) build(); var s=cache.segs[i]; var q=bez(s.pts,1); return Math.round(normalizeRadians(headingAt(i,1,q))/DEG); }
+function endHeading(i){ if (!cache) build(); return Math.round(normalizeRadians(cache.segs[i].tEnd)/DEG); }
+function linStartDeg(i){ if (!cache) build(); return Math.round(normalizeRadians(cache.segs[i].linStart)/DEG); }
 function renderCode(){
   var L=[], vars=uniqueVars(), st=S.doc.start;
   L.push('// Generado con Simulador BIOBUZZ ('+S.fileName+'). Pulgadas; headings en grados.');
@@ -730,7 +743,7 @@ function renderCode(){
       var a=i===0?'startPose':vars[i-1]+'End', b=vars[i]+'End', geo;
       if (q.ctrl.length) geo='curve('+a+', '+q.ctrl.map(function(c){ return 'p.of('+fmt(c.x)+', '+fmt(c.y)+', 0)'; }).join(', ')+', '+b+')';
       else geo='line('+a+', '+b+')';
-      var hd={linear:'.linear(Math.toRadians('+fmt(q.h0)+'), Math.toRadians('+fmt(q.h1)+'))', constant:'.constant(Math.toRadians('+fmt(q.hc)+'))', tangent:'.tangent()', reverse:'.reverseTangent()', facing:'.facingPoint(p.of('+fmt(q.fp.x)+', '+fmt(q.fp.y)+', 0))'}[q.mode];
+      var hd={linear:'.linear(Math.toRadians('+linStartDeg(i)+'), Math.toRadians('+fmt(q.h1)+'))', constant:'.constant(Math.toRadians('+fmt(q.hc)+'))', tangent:'.tangent()', reverse:'.reverseTangent()', facing:'.facingPoint(p.of('+fmt(q.fp.x)+', '+fmt(q.fp.y)+', 0))'}[q.mode];
       L.push('    // '+(i+1)+'. '+q.name);
       L.push('    '+vars[i]+' = '+geo+hd+';');
     });
